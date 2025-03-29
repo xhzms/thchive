@@ -18,7 +18,7 @@ const multer = require('multer');
 const app = express();
 const upload = multer();
 
-const DEFAULT_THREADS_QUERY_LIMIT = 10;
+const DEFAULT_THREADS_QUERY_LIMIT = 0;
 
 const FIELD__ALT_TEXT = 'alt_text';
 const FIELD__ERROR_MESSAGE = 'error_message';
