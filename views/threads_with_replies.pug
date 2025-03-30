@@ -1,0 +1,116 @@
+extends layout_with_account
+
+block content
+    mixin replyChain(replies, depth)
+        each reply in replies
+            tr.threads-list-item(style=`background-color: rgba(0,0,0,${depth * 0.05})`)
+                td.thread-id
+                    a(href=`/threads/${reply.id}`)=reply.id
+                td.thread-timestamp=reply.timestamp
+                td.thread-type
+                    case reply.media_type
+                        when 'IMAGE'
+                            img(src=reply.media_url alt=reply.alt_text style="max-width: 100px; max-height: 100px;")
+                        when 'VIDEO'
+                            video(controls style="max-width: 100px; max-height: 100px;")
+                                source(src=reply.media_url type="video/mp4")
+                        when 'CAROUSEL_ALBUM'
+                            img(src=reply.media_url alt=reply.alt_text style="max-width: 100px; max-height: 100px;")
+                        when 'AUDIO'
+                            audio(controls style="max-width: 200px;")
+                                source(src=reply.media_url type="audio/mpeg")
+                        when 'TEXT_POST'
+                            span TEXT
+                        when 'REPOST_FACADE'
+                            span REPOST
+                        default
+                            span=reply.media_type
+                td.thread-text
+                    if depth > 0
+                        span(style=`margin-left: ${depth * 20}px`) ↳ 
+                    span=reply.text
+                td.thread-permalink
+                    a(href=reply.permalink target='_blank') View on Threads
+                td.thread-views=(reply.insights && reply.insights.views) || 0
+                td.thread-likes=(reply.insights && reply.insights.likes) || 0
+                td.thread-replies=(reply.insights && reply.insights.replies) || 0
+                td.thread-reposts=(reply.insights && reply.insights.reposts) || 0
+            if reply.childReplies && reply.childReplies.length
+                +replyChain(reply.childReplies, depth + 1)
+
+    table.threads-list(style="width: 100%; table-layout: fixed;")
+        thead
+            tr
+                th(style="width: 8%") ID
+                th(style="width: 12%") Created On
+                th(style="width: 25%") Media Type
+                th(style="width: 23%") Content
+                th(style="width: 8%") Links
+                th(style="width: 6%") Views
+                th(style="width: 6%") Likes
+                th(style="width: 6%") Replies
+                th(style="width: 6%") Reposts
+        tbody
+            each thread in threads
+                tr.threads-list-item
+                    td.thread-id
+                        a(href=`/threads/${thread.id}`)=thread.id
+                    td.thread-timestamp=thread.timestamp
+                    td.thread-type
+                        case thread.media_type
+                            when 'IMAGE'
+                                img(src=thread.media_url alt=thread.alt_text style="max-width: 100px; max-height: 100px;")
+                            when 'VIDEO'
+                                video(controls style="max-width: 100px; max-height: 100px;")
+                                    source(src=thread.media_url type="video/mp4")
+                                    if thread.thumbnail_url
+                                        img(src=thread.thumbnail_url alt="비디오 썸네일")
+                            when 'CAROUSEL_ALBUM'
+                                if thread.children && thread.children.data
+                                    div(style="display: flex; gap: 5px; flex-wrap: wrap;")
+                                        each child in thread.children.data
+                                            case child.media_type
+                                                when 'IMAGE'
+                                                    img(src=child.media_url alt=child.alt_text style="max-width: 100px; max-height: 100px;")
+                                                when 'VIDEO'
+                                                    video(controls style="max-width: 100px; max-height: 100px;")
+                                                        source(src=child.media_url type="video/mp4")
+                                                        if child.thumbnail_url
+                                                            img(src=child.thumbnail_url alt="비디오 썸네일")
+                            when 'TEXT_POST'
+                                if thread.is_quote_post && thread.quoted_post
+                                    - const quoteUsername = thread.quoted_post.username || thread.username
+                                    - const quoteShortcode = thread.quoted_post.shortcode || thread.shortcode
+                                    a(href=`https://www.threads.net/@${quoteUsername}/post/${quoteShortcode}` target="_blank" style="text-decoration: underline;") 인용된 글
+                                else
+                                    span TEXT
+                            when 'REPOST_FACADE'
+                                if thread.reposted_post
+                                    - const repostUsername = thread.reposted_post.username || thread.username
+                                    - const repostShortcode = thread.reposted_post.shortcode || thread.shortcode
+                                    a(href=`https://www.threads.net/@${repostUsername}/post/${repostShortcode}` target="_blank" style="text-decoration: underline;") 리포스트
+                                else
+                                    span REPOST
+                            default
+                                span=thread.media_type
+                    td.thread-text
+                        if thread.text
+                            p=thread.text
+                        if thread.gif_url
+                            img(src=thread.gif_url alt="GIF" style="max-width: 100px;")
+                    td.thread-links
+                        if thread.permalink
+                            a(href=thread.permalink target='_blank') View on Threads
+                            br
+                        if thread.link_attachment_url
+                            a(href=thread.link_attachment_url target='_blank') Attached Link
+                        if thread.quoted_post
+                            p Quoted Post: #{thread.quoted_post}
+                        if thread.reposted_post
+                            p Reposted: #{thread.reposted_post}
+                    td.thread-views=(thread.insights && thread.insights.views) || 0
+                    td.thread-likes=(thread.insights && thread.insights.likes) || 0
+                    td.thread-replies=(thread.insights && thread.insights.replies) || 0
+                    td.thread-reposts=(thread.insights && thread.insights.reposts) || 0
+                if thread.replyChain && thread.replyChain.length
+                    +replyChain(thread.replyChain, 1) 

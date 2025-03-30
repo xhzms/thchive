@@ -10,6 +10,11 @@ block content
                 th Text
                 th Permalink
                 th Reply Audience
+                th Views
+                th Likes
+                th Replies
+                th Reposts
+                th Quotes
         tbody
             each thread in threads
                 tr.threads-list-item
@@ -21,6 +26,11 @@ block content
                     td.thread-permalink
                         a(href=thread.permalink target='_blank') View on Threads
                     td.thread-reply-audience=thread.reply_audience
+                    td.thread-views=(thread.insights && thread.insights.views) || 0
+                    td.thread-likes=(thread.insights && thread.insights.likes) || 0
+                    td.thread-replies=(thread.insights && thread.insights.replies) || 0
+                    td.thread-reposts=(thread.insights && thread.insights.reposts) || 0
+                    td.thread-quotes=(thread.insights && thread.insights.quotes) || 0
 
     div.paging
         if paging.nextUrl

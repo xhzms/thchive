@@ -18,3 +18,9 @@ block content
     button(onclick="location.href='/keywordSearch'") Search for Threads
     button(onclick="location.href='/userInsights'") My Insights
     button(onclick="location.href='/publishingLimit'") Publishing Limit
+
+  div.action-buttons(style="margin-top: 20px;")
+    a(href="/threads_all" style="margin-right: 10px;")
+      button(style="padding: 10px 20px; font-size: 16px;") 전체 게시물 보기
+    a(href="/threads_all_with_replies")
+      button(style="padding: 10px 20px; font-size: 16px;") 답글 포함 게시물 보기

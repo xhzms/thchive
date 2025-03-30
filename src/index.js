@@ -14,11 +14,12 @@ const path = require('path');
 const fs = require('fs');
 const { URLSearchParams, URL } = require('url');
 const multer = require('multer');
+const { Client } = require('@notionhq/client');
 
 const app = express();
 const upload = multer();
 
-const DEFAULT_THREADS_QUERY_LIMIT = 0;
+const DEFAULT_THREADS_QUERY_LIMIT = 10;
 
 const FIELD__ALT_TEXT = 'alt_text';
 const FIELD__ERROR_MESSAGE = 'error_message';
@@ -819,6 +820,254 @@ app.get('/oEmbed', async (req, res) => {
     });
 });
 
+// 모든 스레드를 가져오는 함수
+async function fetchAllThreads(accessToken) {
+    let allThreads = [];
+    let nextCursor = null;
+    let pageCount = 0;
+    
+    do {
+        const params = {
+            [PARAMS__FIELDS]: [
+                'id',
+                'media_product_type',
+                'media_type',
+                'media_url',
+                'permalink',
+                'owner',
+                'username',
+                'text',
+                'timestamp',
+                'shortcode',
+                'thumbnail_url',
+                'children',
+                'is_quote_post',
+                'quoted_post',
+                'reposted_post',
+                'alt_text',
+                'link_attachment_url',
+                'gif_url'
+            ].join(','),
+            limit: DEFAULT_THREADS_QUERY_LIMIT
+        };
+
+        if (nextCursor) {
+            params.after = nextCursor;
+        }
+
+        pageCount++;
+        console.log(`${pageCount}번째 페이지 로딩 중... (현재 ${allThreads.length}개 로드됨)`);
+        
+        const queryThreadsUrl = buildGraphAPIURL(`me/threads`, params, accessToken);
+        const queryResponse = await axios.get(queryThreadsUrl, { httpsAgent: agent });
+        
+        const newThreads = queryResponse.data.data;
+        
+        // 각 스레드의 인사이트 정보 가져오기
+        for (const thread of newThreads) {
+            const insights = await fetchThreadWithInsights(thread.id, accessToken);
+            thread.insights = insights;
+        }
+
+        allThreads = [...allThreads, ...newThreads];
+
+        nextCursor = queryResponse.data.paging?.next ? 
+            new URL(queryResponse.data.paging.next).searchParams.get('after') : 
+            null;
+
+        if (pageCount >= 10) {
+            console.log(`${pageCount}페이지 로드 완료, 중단합니다.`);
+            break;
+        }
+
+        if (nextCursor) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+    } while (nextCursor);
+
+    return allThreads;
+}
+
+// 게시물 필터링 함수 추가
+function filterThreads(threads) {
+    return threads.filter(thread => thread.media_type !== 'REPOST_FACADE');
+}
+
+// 새로운 라우트 추가
+app.get('/threads_all', loggedInUserChecker, async (req, res) => {
+    try {
+        const allThreads = await fetchAllThreads(req.session.access_token);
+        console.log(`총 ${allThreads.length}개의 스레드를 불러왔습니다.`);
+        
+        res.render('threads', {
+            threads: allThreads,
+            paging: {}, // 페이징 없음
+            title: `전체 Threads (${allThreads.length}개)`
+        });
+    } catch (e) {
+        console.error('전체 스레드 로딩 중 에러:', e?.response?.data?.error?.message ?? e.message);
+        res.render('threads', {
+            error: '스레드를 불러오는 중 오류가 발생했습니다.',
+            threads: [],
+            paging: {},
+            title: 'Threads - Error'
+        });
+    }
+});
+
+// 답글 체인을 가져오는 함수
+async function fetchReplyChain(threadId, accessToken, username) {
+    const params = {
+        [PARAMS__FIELDS]: [
+            FIELD__ID,
+            FIELD__TEXT,
+            FIELD__MEDIA_TYPE,
+            FIELD__MEDIA_URL,
+            FIELD__PERMALINK,
+            FIELD__TIMESTAMP,
+            FIELD__USERNAME,
+            FIELD__REPLY_AUDIENCE,
+        ].join(',')
+    };
+
+    const queryRepliesUrl = buildGraphAPIURL(`${threadId}/replies`, params, accessToken);
+    
+    try {
+        const response = await axios.get(queryRepliesUrl, { httpsAgent: agent });
+        const replies = response.data.data;
+        let myReplyChain = [];
+
+        // 각 답글 확인
+        for (const reply of replies) {
+            // 내가 작성한 답글인 경우
+            if (reply.username === username) {
+                // insights 정보 가져오기
+                const insights = await fetchThreadWithInsights(reply.id, accessToken);
+                reply.insights = insights;
+                
+                // 이 답글에 달린 답글들도 재귀적으로 확인
+                const childReplies = await fetchReplyChain(reply.id, accessToken, username);
+                
+                myReplyChain.push({
+                    ...reply,
+                    childReplies
+                });
+            }
+        }
+
+        return myReplyChain;
+    } catch (e) {
+        console.error(`답글 체인 로드 실패 (Thread ${threadId}):`, e.message);
+        return [];
+    }
+}
+
+// 새로운 라우트 추가
+app.get('/threads_with_replies', loggedInUserChecker, async (req, res) => {
+    try {
+        // 1. 먼저 내 게시물들 가져오기
+        const threads = await fetchAllThreads(req.session.access_token);
+        
+        // 2. 각 게시물의 답글 체인 가져오기
+        for (const thread of threads) {
+            // 사용자 정보 가져오기 (첫 번째 게시물에서만)
+            if (!req.session.username) {
+                const userInfoUrl = buildGraphAPIURL('me', {
+                    [PARAMS__FIELDS]: FIELD__USERNAME
+                }, req.session.access_token);
+                const userResponse = await axios.get(userInfoUrl, { httpsAgent: agent });
+                req.session.username = userResponse.data.username;
+            }
+
+            // 답글 체인 가져오기
+            thread.replyChain = await fetchReplyChain(
+                thread.id, 
+                req.session.access_token,
+                req.session.username
+            );
+            
+            // 2초 대기
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        // 3. 결과 렌더링
+        res.render('threads_with_replies', {
+            threads: threads,
+            title: `Threads with Reply Chains (${threads.length}개)`
+        });
+    } catch (e) {
+        console.error('Error:', e);
+        res.status(500).json({
+            error: true,
+            message: '데이터 로드 중 오류가 발생했습니다.'
+        });
+    }
+});
+
+app.get('/threads_all_with_replies', loggedInUserChecker, async (req, res) => {
+    try {
+        console.log('사용자 정보 가져오는 중...');
+        const userInfoUrl = buildGraphAPIURL('me', {
+            [PARAMS__FIELDS]: FIELD__USERNAME
+        }, req.session.access_token);
+        const userResponse = await axios.get(userInfoUrl, { httpsAgent: agent });
+        const username = userResponse.data.username;
+        console.log('사용자:', username);
+
+        console.log('게시물 로드 시작...');
+        let threads = await fetchAllThreads(req.session.access_token);
+        console.log(`${threads.length}개의 게시물 로드 완료`);
+
+        // REPOST 필터링
+        threads = filterThreads(threads);
+        console.log(`리포스트 제외 후 ${threads.length}개의 게시물 처리 시작`);
+
+        // 답글 체인 병렬 수집
+        console.log('답글 체인 수집 시작...');
+        const batchSize = 10;
+        for (let i = 0; i < threads.length; i += batchSize) {
+            const batch = threads.slice(i, i + batchSize);
+            const promises = batch.map(thread => 
+                fetchReplyChain(thread.id, req.session.access_token, username)
+                    .then(replyChain => {
+                        thread.replyChain = replyChain;
+                        console.log(`- 게시물 ${i + batch.indexOf(thread) + 1}/${threads.length} 답글 체인 수집 완료`);
+                    })
+            );
+            
+            await Promise.all(promises);
+            
+            // 배치 사이에 0.5초만 대기
+            if (i + batchSize < threads.length) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+
+        console.log('모든 데이터 수집 완료, 페이지 렌더링 시작');
+
+        // Notion에 저장
+        console.log('Notion 데이터베이스에 저장 시작...');
+        for (const thread of threads) {
+            await saveThreadToNotion(thread);
+            // API 제한을 고려한 대기
+            await new Promise(resolve => setTimeout(resolve, 350));  // Notion API 제한: 3 요청/초
+        }
+        console.log('Notion 저장 완료');
+
+        res.render('threads_with_replies', {
+            threads: threads,
+            title: `Threads with Reply Chains (${threads.length}개)`
+        });
+    } catch (e) {
+        console.error('Error:', e);
+        res.status(500).json({
+            error: true,
+            message: '데이터 로드 중 오류가 발생했습니다: ' + e.message
+        });
+    }
+});
+
 https
     .createServer({
         key: fs.readFileSync(path.join(__dirname, '../'+ HOST +'-key.pem')),
@@ -985,4 +1234,96 @@ async function showReplies(req, res, isTopLevel) {
         manage: isTopLevel ? true : false,
         title: 'Replies',
     });
+}
+
+async function fetchThreadWithInsights(threadId, accessToken) {
+    const params = {
+        [PARAMS__METRIC]: [
+            FIELD__VIEWS,
+            FIELD__LIKES,
+            FIELD__REPLIES,
+            FIELD__REPOSTS,
+            FIELD__QUOTES,
+        ].join(',')
+    };
+
+    const queryThreadUrl = buildGraphAPIURL(`${threadId}/insights`, params, accessToken);
+    
+    try {
+        const queryResponse = await axios.get(queryThreadUrl, { httpsAgent: agent });
+        const metrics = queryResponse.data?.data ?? [];
+        
+        // 메트릭 데이터를 객체로 변환
+        const insights = {};
+        metrics.forEach(metric => {
+            insights[metric.name] = metric.values?.[0]?.value ?? 0;
+        });
+        
+        return insights;
+    } catch (e) {
+        console.error(`Thread ${threadId} insights 로드 실패:`, e.message);
+        return {
+            views: 0,
+            likes: 0,
+            replies: 0,
+            reposts: 0,
+            quotes: 0
+        };
+    }
+}
+
+const notion = new Client({
+    auth: process.env.NOTION_TOKEN,
+});
+
+const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID;
+
+// Notion에 Thread 데이터 저장하는 함수
+async function saveThreadToNotion(thread) {
+    try {
+        return await notion.pages.create({
+            parent: { database_id: NOTION_DATABASE_ID },
+            properties: {
+                ID: {
+                    title: [{ text: { content: thread.id } }]
+                },
+                "Created At": {
+                    date: { start: thread.timestamp }
+                },
+                "Media Type": {
+                    select: { name: thread.media_type }
+                },
+                "Content": {
+                    rich_text: [{ text: { content: thread.text || '' } }]
+                },
+                "Views": {
+                    number: thread.insights?.views || 0
+                },
+                "Likes": {
+                    number: thread.insights?.likes || 0
+                },
+                "Replies": {
+                    number: thread.insights?.replies || 0
+                },
+                "Reposts": {
+                    number: thread.insights?.reposts || 0
+                },
+                "Thread URL": {
+                    url: thread.permalink
+                },
+                "Media URLs": {
+                    rich_text: [{
+                        text: {
+                            content: thread.media_type === 'CAROUSEL_ALBUM' 
+                                ? thread.children?.data?.map(child => child.media_url).join('\n') || ''
+                                : thread.media_url || ''
+                        }
+                    }]
+                }
+            }
+        });
+    } catch (error) {
+        console.error(`Error saving thread ${thread.id} to Notion:`, error);
+        throw error;
+    }
 }
