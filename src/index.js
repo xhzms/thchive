@@ -15,6 +15,7 @@ const fs = require('fs');
 const { URLSearchParams, URL } = require('url');
 const multer = require('multer');
 const { Client } = require('@notionhq/client');
+const { saveThreadToNotion } = require('./notionService');
 
 const app = express();
 const upload = multer();
@@ -840,10 +841,10 @@ async function fetchAllThreads(accessToken) {
                 'timestamp',
                 'shortcode',
                 'thumbnail_url',
-                'children',
+                'children{media_type,media_url,alt_text,thumbnail_url}',
                 'is_quote_post',
-                'quoted_post',
-                'reposted_post',
+                'quoted_post{id,permalink,text,media_type,media_url,username,owner,shortcode,thumbnail_url,alt_text,children{media_type,media_url,alt_text,thumbnail_url}}',
+                'reposted_post{id,username,shortcode,permalink}',
                 'alt_text',
                 'link_attachment_url',
                 'gif_url'
@@ -863,13 +864,34 @@ async function fetchAllThreads(accessToken) {
         
         const newThreads = queryResponse.data.data;
         
-        // 각 스레드의 인사이트 정보 가져오기
-        for (const thread of newThreads) {
-            const insights = await fetchThreadWithInsights(thread.id, accessToken);
-            thread.insights = insights;
-        }
+        // 인사이트 정보 병렬로 가져오기
+        const insightPromises = newThreads.map(thread => 
+            fetchThreadWithInsights(thread.id, accessToken)
+                .then(insights => {
+                    thread.insights = insights;
+                    if (thread.media_type === 'CAROUSEL_ALBUM' && thread.children) {
+                        thread.children = {
+                            data: thread.children.data || []
+                        };
+                    }
+                    // 인용된 글의 URL이 없는 경우 생성
+                    if (thread.is_quote_post && thread.quoted_post) {
+                        if (!thread.quoted_post.permalink && thread.quoted_post.username && thread.quoted_post.shortcode) {
+                            thread.quoted_post.permalink = `https://www.threads.net/@${thread.quoted_post.username}/post/${thread.quoted_post.shortcode}`;
+                        }
+                        // 인용된 글이 캐러셀인 경우 처리
+                        if (thread.quoted_post.media_type === 'CAROUSEL_ALBUM' && thread.quoted_post.children) {
+                            thread.quoted_post.children = {
+                                data: thread.quoted_post.children.data || []
+                            };
+                        }
+                    }
+                    return thread;
+                })
+        );
 
-        allThreads = [...allThreads, ...newThreads];
+        const processedThreads = await Promise.all(insightPromises);
+        allThreads = [...allThreads, ...processedThreads];
 
         nextCursor = queryResponse.data.paging?.next ? 
             new URL(queryResponse.data.paging.next).searchParams.get('after') : 
@@ -881,7 +903,7 @@ async function fetchAllThreads(accessToken) {
         }
 
         if (nextCursor) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
 
     } while (nextCursor);
@@ -1023,9 +1045,9 @@ app.get('/threads_all_with_replies', loggedInUserChecker, async (req, res) => {
         threads = filterThreads(threads);
         console.log(`리포스트 제외 후 ${threads.length}개의 게시물 처리 시작`);
 
-        // 답글 체인 병렬 수집
+        // 답글 체인 병렬 수집 - 배치 크기 증가
         console.log('답글 체인 수집 시작...');
-        const batchSize = 10;
+        const batchSize = 20; // 10에서 20으로 증가
         for (let i = 0; i < threads.length; i += batchSize) {
             const batch = threads.slice(i, i + batchSize);
             const promises = batch.map(thread => 
@@ -1038,22 +1060,13 @@ app.get('/threads_all_with_replies', loggedInUserChecker, async (req, res) => {
             
             await Promise.all(promises);
             
-            // 배치 사이에 0.5초만 대기
+            // 배치 사이 대기 시간 감소
             if (i + batchSize < threads.length) {
-                await new Promise(resolve => setTimeout(resolve, 500));
+                await new Promise(resolve => setTimeout(resolve, 250)); // 500ms에서 250ms로 감소
             }
         }
 
         console.log('모든 데이터 수집 완료, 페이지 렌더링 시작');
-
-        // Notion에 저장
-        console.log('Notion 데이터베이스에 저장 시작...');
-        for (const thread of threads) {
-            await saveThreadToNotion(thread);
-            // API 제한을 고려한 대기
-            await new Promise(resolve => setTimeout(resolve, 350));  // Notion API 제한: 3 요청/초
-        }
-        console.log('Notion 저장 완료');
 
         res.render('threads_with_replies', {
             threads: threads,
@@ -1064,6 +1077,29 @@ app.get('/threads_all_with_replies', loggedInUserChecker, async (req, res) => {
         res.status(500).json({
             error: true,
             message: '데이터 로드 중 오류가 발생했습니다: ' + e.message
+        });
+    }
+});
+
+// Notion 저장을 위한 새로운 라우트 추가
+app.post('/save-to-notion', loggedInUserChecker, async (req, res) => {
+    try {
+        const { threads } = req.body;
+        console.log('Notion 데이터베이스에 저장 시작...');
+        
+        for (const thread of threads) {
+            await saveThreadToNotion(thread);
+            // API 제한을 고려한 대기
+            await new Promise(resolve => setTimeout(resolve, 350));  // Notion API 제한: 3 요청/초
+        }
+        
+        console.log('Notion 저장 완료');
+        res.json({ success: true, message: 'Notion에 성공적으로 저장되었습니다.' });
+    } catch (error) {
+        console.error('Notion 저장 중 오류:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Notion 저장 중 오류가 발생했습니다: ' + error.message 
         });
     }
 });
@@ -1269,61 +1305,5 @@ async function fetchThreadWithInsights(threadId, accessToken) {
             reposts: 0,
             quotes: 0
         };
-    }
-}
-
-const notion = new Client({
-    auth: process.env.NOTION_TOKEN,
-});
-
-const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID;
-
-// Notion에 Thread 데이터 저장하는 함수
-async function saveThreadToNotion(thread) {
-    try {
-        return await notion.pages.create({
-            parent: { database_id: NOTION_DATABASE_ID },
-            properties: {
-                ID: {
-                    title: [{ text: { content: thread.id } }]
-                },
-                "Created At": {
-                    date: { start: thread.timestamp }
-                },
-                "Media Type": {
-                    select: { name: thread.media_type }
-                },
-                "Content": {
-                    rich_text: [{ text: { content: thread.text || '' } }]
-                },
-                "Views": {
-                    number: thread.insights?.views || 0
-                },
-                "Likes": {
-                    number: thread.insights?.likes || 0
-                },
-                "Replies": {
-                    number: thread.insights?.replies || 0
-                },
-                "Reposts": {
-                    number: thread.insights?.reposts || 0
-                },
-                "Thread URL": {
-                    url: thread.permalink
-                },
-                "Media URLs": {
-                    rich_text: [{
-                        text: {
-                            content: thread.media_type === 'CAROUSEL_ALBUM' 
-                                ? thread.children?.data?.map(child => child.media_url).join('\n') || ''
-                                : thread.media_url || ''
-                        }
-                    }]
-                }
-            }
-        });
-    } catch (error) {
-        console.error(`Error saving thread ${thread.id} to Notion:`, error);
-        throw error;
     }
 }

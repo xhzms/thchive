@@ -1,0 +1,46 @@
+.thread-quote {
+    margin: 10px 0;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-left: 3px solid #007bff;
+    border-radius: 4px;
+}
+
+.thread-quote p {
+    margin: 5px 0;
+}
+
+.thread-quote a {
+    color: #007bff;
+    text-decoration: none;
+}
+
+.thread-quote a:hover {
+    text-decoration: underline;
+}
+
+.quote-text {
+    font-style: italic;
+    color: #666;
+}
+
+.quote-media {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    margin: 5px 0;
+}
+
+.quote-insights {
+    display: flex;
+    gap: 15px;
+    margin-top: 5px;
+    font-size: 0.9em;
+    color: #666;
+}
+
+.quote-insights span {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+} 

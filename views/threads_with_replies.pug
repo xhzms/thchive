@@ -79,9 +79,15 @@ block content
                                                             img(src=child.thumbnail_url alt="비디오 썸네일")
                             when 'TEXT_POST'
                                 if thread.is_quote_post && thread.quoted_post
-                                    - const quoteUsername = thread.quoted_post.username || thread.username
-                                    - const quoteShortcode = thread.quoted_post.shortcode || thread.shortcode
-                                    a(href=`https://www.threads.net/@${quoteUsername}/post/${quoteShortcode}` target="_blank" style="text-decoration: underline;") 인용된 글
+                                    .thread-quote
+                                        p
+                                            | 인용된 글: 
+                                            a(href=thread.quoted_post.permalink target="_blank") 
+                                                | @#{thread.quoted_post.username}의 게시물
+                                        if thread.quoted_post.text
+                                            p.quote-text= thread.quoted_post.text
+                                        if thread.quoted_post.media_type === 'IMAGE' && thread.quoted_post.media_url
+                                            img.quote-media(src=thread.quoted_post.media_url alt=thread.quoted_post.alt_text || '인용된 이미지')
                                 else
                                     span TEXT
                             when 'REPOST_FACADE'
@@ -98,6 +104,16 @@ block content
                             p=thread.text
                         if thread.gif_url
                             img(src=thread.gif_url alt="GIF" style="max-width: 100px;")
+                        if thread.is_quote_post && thread.quoted_post
+                            .thread-quote
+                                p
+                                    | 인용된 글: 
+                                    a(href=thread.quoted_post.permalink target="_blank") 
+                                        | @#{thread.quoted_post.username}의 게시물
+                                if thread.quoted_post.text
+                                    p.quote-text= thread.quoted_post.text
+                                if thread.quoted_post.media_type === 'IMAGE' && thread.quoted_post.media_url
+                                    img.quote-media(src=thread.quoted_post.media_url alt=thread.quoted_post.alt_text || '인용된 이미지')
                     td.thread-links
                         if thread.permalink
                             a(href=thread.permalink target='_blank') View on Threads
@@ -113,4 +129,56 @@ block content
                     td.thread-replies=(thread.insights && thread.insights.replies) || 0
                     td.thread-reposts=(thread.insights && thread.insights.reposts) || 0
                 if thread.replyChain && thread.replyChain.length
-                    +replyChain(thread.replyChain, 1) 
+                    +replyChain(thread.replyChain, 1)
+
+    // Notion 저장 버튼 추가
+    .notion-save-section.mb-4
+        button#saveToNotion.btn.btn-primary
+            | Notion 데이터베이스에 저장하기
+        #saveStatus.mt-2
+
+block scripts
+    script.
+        document.getElementById('saveToNotion').addEventListener('click', async function() {
+            const button = this;
+            const statusDiv = document.getElementById('saveStatus');
+            
+            // 버튼 비활성화 및 로딩 상태 표시
+            button.disabled = true;
+            button.innerHTML = '저장 중...';
+            statusDiv.innerHTML = '';
+            
+            try {
+                const response = await fetch('/save-to-notion', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        threads: !{JSON.stringify(threads)}
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusDiv.innerHTML = `
+                        <div class="alert alert-success">
+                            ${data.message}
+                        </div>
+                    `;
+                } else {
+                    throw new Error(data.message);
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `
+                    <div class="alert alert-danger">
+                        오류가 발생했습니다: ${error.message}
+                    </div>
+                `;
+            } finally {
+                // 버튼 상태 복구
+                button.disabled = false;
+                button.innerHTML = 'Notion 데이터베이스에 저장하기';
+            }
+        }); 
